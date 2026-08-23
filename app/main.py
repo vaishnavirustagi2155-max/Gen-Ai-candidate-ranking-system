@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     auth,
@@ -15,6 +16,29 @@ app = FastAPI(
     title="GenAI Candidate Ranking System",
     description="AI-powered candidate ranking and recruitment assistant",
     version="1.0.0",
+)
+
+
+# ============================================================
+# CORS
+# ============================================================
+
+app.add_middleware(
+    CORSMiddleware,
+
+    allow_origins=[
+        "https://kram-omega.vercel.app",
+    ],
+
+    allow_credentials=True,
+
+    allow_methods=[
+        "*"
+    ],
+
+    allow_headers=[
+        "*"
+    ],
 )
 
 
@@ -36,6 +60,7 @@ app.include_router(process.router)
 
 @app.get("/")
 def root():
+
     return {
         "message": "GenAI Candidate Ranking System API is running",
         "version": "1.0.0",
@@ -48,6 +73,7 @@ def root():
 
 @app.get("/health")
 def health_check():
+
     return {
         "status": "healthy",
     }
@@ -70,20 +96,17 @@ def custom_openapi():
     )
 
     # --------------------------------------------------------
-    # Fix the generated schema for the multiple-resume
-    # upload endpoint.
+    # Fix generated schema for multiple-resume upload endpoint
     # --------------------------------------------------------
 
     process_schema_name = (
         "Body_process_ranking_api_ranking_process_post"
     )
 
-    schemas = openapi_schema.get(
-        "components",
-        {}
-    ).get(
-        "schemas",
-        {}
+    schemas = (
+        openapi_schema
+        .get("components", {})
+        .get("schemas", {})
     )
 
     process_schema = schemas.get(
@@ -103,8 +126,6 @@ def custom_openapi():
 
         if files_property:
 
-            # Swagger/OpenAPI representation for
-            # multiple uploaded files.
             files_property.clear()
 
             files_property.update({
