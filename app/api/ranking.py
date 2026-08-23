@@ -1,9 +1,6 @@
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from app.services.matching_engine import match_candidate
-from app.services.shap_explainer import explain_candidate
-
 
 router = APIRouter(
     prefix="/api/ranking",
@@ -69,6 +66,22 @@ async def rank_candidates(
     request: RankingRequest
 ):
 
+    # ========================================================
+    # IMPORTANT:
+    # Heavy ML services are imported ONLY when ranking
+    # is actually requested.
+    #
+    # This keeps FastAPI startup memory low on Render.
+    # ========================================================
+
+    from app.services.matching_engine import (
+        match_candidate
+    )
+
+    from app.services.shap_explainer import (
+        explain_candidate
+    )
+
     ranked_candidates = []
 
     # ========================================================
@@ -93,7 +106,9 @@ async def rank_candidates(
         # Scores
         # ----------------------------------------------------
 
-        skill_score = result["skill_score"]
+        skill_score = result[
+            "skill_score"
+        ]
 
         preferred_skill_score = result[
             "preferred_skill_score"
@@ -133,7 +148,7 @@ async def rank_candidates(
                 "top_positive_factors": [],
                 "top_negative_factors": [],
                 "error": (
-                    f"SHAP explanation failed: "
+                    "SHAP explanation failed: "
                     f"{str(shap_error)}"
                 )
             }
