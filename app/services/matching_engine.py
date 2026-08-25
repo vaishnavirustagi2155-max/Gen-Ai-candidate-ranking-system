@@ -184,6 +184,66 @@ def calculate_experience_score(
 
 
 # ============================================================
+# Safe semantic similarity
+# ============================================================
+
+def calculate_safe_semantic_score(
+    job_text: str,
+    resume_text: str,
+    candidate_skills: list[str]
+) -> tuple[float, str | None]:
+
+    """
+    Safely calculate semantic similarity.
+
+    The semantic model is an optional enhancement.
+    If Hugging Face/model loading fails, ranking continues
+    using skills and experience instead of returning 502.
+
+    Returns:
+
+        (
+            semantic_score,
+            error_message
+        )
+    """
+
+    if not job_text or not resume_text:
+
+        return 0.0, None
+
+    try:
+
+        score = calculate_semantic_similarity(
+            job_text,
+            resume_text,
+            candidate_skills
+        )
+
+        score = float(score)
+
+        score = max(
+            0.0,
+            min(score, 100.0)
+        )
+
+        return round(score, 2), None
+
+    except Exception as error:
+
+        print(
+            "WARNING: Semantic matching failed. "
+            "Continuing without semantic score."
+        )
+
+        print(
+            f"Semantic error: {error}"
+        )
+
+        return 0.0, str(error)
+
+
+# ============================================================
 # Final score
 # ============================================================
 
@@ -202,7 +262,10 @@ def calculate_final_score(
     )
 
     return round(
-        final_score,
+        max(
+            0.0,
+            min(final_score, 100.0)
+        ),
         2
     )
 
@@ -306,10 +369,12 @@ def match_candidate(
     # Semantic similarity
     # --------------------------------------------------------
 
-    semantic_score = calculate_semantic_similarity(
-        job_text,
-        resume_text,
-        candidate_skills
+    semantic_score, semantic_error = (
+        calculate_safe_semantic_score(
+            job_text=job_text,
+            resume_text=resume_text,
+            candidate_skills=candidate_skills
+        )
     )
 
     # --------------------------------------------------------
@@ -324,12 +389,10 @@ def match_candidate(
     )
 
     # --------------------------------------------------------
-    # Return ONLY matching information
-    #
-    # SHAP is intentionally NOT calculated here.
+    # Result
     # --------------------------------------------------------
 
-    return {
+    result = {
 
         "overall_score": final_score,
 
@@ -350,19 +413,27 @@ def match_candidate(
         ),
 
         "matched_required_skills": (
-            required_result["matched_skills"]
+            required_result[
+                "matched_skills"
+            ]
         ),
 
         "missing_required_skills": (
-            required_result["missing_skills"]
+            required_result[
+                "missing_skills"
+            ]
         ),
 
         "matched_preferred_skills": (
-            preferred_result["matched_skills"]
+            preferred_result[
+                "matched_skills"
+            ]
         ),
 
         "missing_preferred_skills": (
-            preferred_result["missing_skills"]
+            preferred_result[
+                "missing_skills"
+            ]
         ),
 
         "recommendation": (
@@ -371,3 +442,27 @@ def match_candidate(
             )
         )
     }
+
+    # --------------------------------------------------------
+    # Semantic status
+    # --------------------------------------------------------
+
+    if semantic_error:
+
+        result["semantic_status"] = (
+            "unavailable"
+        )
+
+        result["semantic_error"] = (
+            "Semantic model unavailable. "
+            "Ranking completed using "
+            "skills and experience."
+        )
+
+    else:
+
+        result["semantic_status"] = (
+            "available"
+        )
+
+    return result

@@ -1,420 +1,151 @@
 """
-KRAM AI - Low-Memory Semantic Matching Service
+Lightweight semantic similarity service.
 
-Designed for:
-- Render low-memory deployment
-- FastAPI
-- CPU-only inference
-- Lazy SentenceTransformer loading
-- Graceful Hugging Face/model failures
-- Single model instance per process
+Render-safe implementation.
 
-IMPORTANT:
-The semantic model is NOT loaded when this module is imported.
-It is loaded only when semantic matching is actually requested.
+This version intentionally does NOT use:
+- SentenceTransformer
+- PyTorch
+- Hugging Face Hub
+
+Instead it uses:
+- TF-IDF
+- cosine similarity
+
+This keeps memory usage very low while preserving
+semantic-style text similarity for candidate ranking.
 """
 
-import os
-import logging
-from functools import lru_cache
-from typing import Optional
+from __future__ import annotations
 
-import numpy as np
+import re
+from typing import Iterable
 
-
-# ============================================================
-# LOW-MEMORY ENVIRONMENT SETTINGS
-# ============================================================
-
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
-# Prevent Hugging Face from using unnecessary parallelism.
-os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-logger = logging.getLogger(__name__)
-
-
-# ============================================================
-# MODEL CONFIGURATION
-# ============================================================
-
-MODEL_NAME = os.getenv(
-    "SEMANTIC_MODEL",
-    "all-MiniLM-L6-v2"
-)
-
-# Very small batch for Render.
-BATCH_SIZE = 1
-
-# all-MiniLM-L6-v2 produces 384-dimensional embeddings.
-EMBEDDING_DIMENSION = 384
-
-
-# ============================================================
-# MODEL STATE
-# ============================================================
-
-_model_failed = False
-_model_error: Optional[str] = None
-
-
-# ============================================================
-# SAFE ZERO EMBEDDING
-# ============================================================
-
-def _zero_embedding() -> np.ndarray:
-    """
-    Return a zero vector when semantic model is unavailable.
-    """
-
-    return np.zeros(
-        EMBEDDING_DIMENSION,
-        dtype=np.float32
-    )
-
-
-# ============================================================
-# LAZY MODEL LOADING
-# ============================================================
-
-@lru_cache(maxsize=1)
-def get_model():
-    """
-    Load SentenceTransformer lazily.
-
-    The model is loaded only when semantic matching
-    is actually requested.
-
-    If model loading fails, None is returned instead
-    of crashing the FastAPI application.
-    """
-
-    global _model_failed
-    global _model_error
-
-    # --------------------------------------------------------
-    # Don't repeatedly attempt a failed model download.
-    # --------------------------------------------------------
-
-    if _model_failed:
-
-        logger.warning(
-            "Semantic model previously failed to load. "
-            "Semantic matching is disabled for this process."
-        )
-
-        return None
-
-    try:
-
-        # ----------------------------------------------------
-        # Import PyTorch only when required.
-        # ----------------------------------------------------
-
-        import torch
-
-        # ----------------------------------------------------
-        # Limit CPU threads.
-        # ----------------------------------------------------
-
-        try:
-
-            torch.set_num_threads(1)
-            torch.set_num_interop_threads(1)
-
-        except RuntimeError:
-
-            # Thread configuration may already be initialized.
-            pass
-
-        # ----------------------------------------------------
-        # Import SentenceTransformer lazily.
-        # ----------------------------------------------------
-
-        from sentence_transformers import (
-            SentenceTransformer
-        )
-
-        logger.info(
-            "Loading semantic model: %s",
-            MODEL_NAME
-        )
-
-        # ----------------------------------------------------
-        # Load CPU model.
-        # ----------------------------------------------------
-
-        model = SentenceTransformer(
-            MODEL_NAME,
-            device="cpu"
-        )
-
-        # ----------------------------------------------------
-        # Evaluation mode.
-        # ----------------------------------------------------
-
-        try:
-
-            model.eval()
-
-        except AttributeError:
-
-            pass
-
-        logger.info(
-            "Semantic model loaded successfully."
-        )
-
-        return model
-
-    except Exception as exc:
-
-        _model_failed = True
-
-        _model_error = str(exc)
-
-        logger.exception(
-            "Semantic model failed to load. "
-            "Semantic matching will be disabled. "
-            "Error: %s",
-            exc
-        )
-
-        return None
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 
 # ============================================================
 # TEXT CLEANING
 # ============================================================
 
-def _clean_text(
-    text: Optional[str]
-) -> str:
+def _clean_text(text: str | None) -> str:
     """
     Safely normalize text.
     """
 
     if text is None:
-
         return ""
 
     if not isinstance(text, str):
-
         text = str(text)
 
-    return " ".join(
-        text.strip().split()
-    )
-
-
-# ============================================================
-# SINGLE EMBEDDING
-# ============================================================
-
-def create_embedding(
-    text: str
-) -> np.ndarray:
-    """
-    Create a single normalized embedding.
-
-    If the semantic model is unavailable,
-    a zero vector is returned.
-    """
-
-    text = _clean_text(text)
+    text = text.strip()
 
     if not text:
+        return ""
 
-        return _zero_embedding()
+    # Normalize whitespace.
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
 
-    model = get_model()
-
-    # --------------------------------------------------------
-    # Model unavailable.
-    # --------------------------------------------------------
-
-    if model is None:
-
-        return _zero_embedding()
-
-    try:
-
-        embedding = model.encode(
-            text,
-            batch_size=BATCH_SIZE,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False
-        )
-
-        return np.asarray(
-            embedding,
-            dtype=np.float32
-        )
-
-    except Exception as exc:
-
-        logger.exception(
-            "Semantic embedding generation failed: %s",
-            exc
-        )
-
-        return _zero_embedding()
+    return text
 
 
 # ============================================================
-# MULTIPLE EMBEDDINGS
+# SKILL CLEANING
 # ============================================================
 
-def _create_embeddings(
-    texts: list[str]
-) -> np.ndarray:
+def _clean_skills(
+    skills: Iterable[str] | None
+) -> list[str]:
     """
-    Generate embeddings for multiple texts.
-
-    Uses a very small batch to reduce memory usage.
+    Clean candidate skills.
     """
 
-    cleaned_texts = [
-        _clean_text(text)
-        for text in texts
-    ]
+    if not skills:
+        return []
 
-    # --------------------------------------------------------
-    # Empty input.
-    # --------------------------------------------------------
+    cleaned = []
 
-    if not cleaned_texts:
+    for skill in skills:
 
-        return np.empty(
-            (0, EMBEDDING_DIMENSION),
-            dtype=np.float32
-        )
+        if skill is None:
+            continue
 
-    # --------------------------------------------------------
-    # If everything is empty.
-    # --------------------------------------------------------
+        skill = _clean_text(skill)
 
-    if not any(cleaned_texts):
+        if skill:
+            cleaned.append(skill)
 
-        return np.zeros(
-            (
-                len(cleaned_texts),
-                EMBEDDING_DIMENSION
-            ),
-            dtype=np.float32
-        )
-
-    model = get_model()
-
-    # --------------------------------------------------------
-    # Model unavailable.
-    # --------------------------------------------------------
-
-    if model is None:
-
-        return np.zeros(
-            (
-                len(cleaned_texts),
-                EMBEDDING_DIMENSION
-            ),
-            dtype=np.float32
-        )
-
-    try:
-
-        embeddings = model.encode(
-            cleaned_texts,
-            batch_size=BATCH_SIZE,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False
-        )
-
-        return np.asarray(
-            embeddings,
-            dtype=np.float32
-        )
-
-    except Exception as exc:
-
-        logger.exception(
-            "Batch semantic embedding failed: %s",
-            exc
-        )
-
-        return np.zeros(
-            (
-                len(cleaned_texts),
-                EMBEDDING_DIMENSION
-            ),
-            dtype=np.float32
-        )
+    return cleaned
 
 
 # ============================================================
-# COSINE SIMILARITY
+# TEXT SIMILARITY
 # ============================================================
 
-def _cosine_similarity(
-    vector_a: np.ndarray,
-    vector_b: np.ndarray
+def _calculate_text_similarity(
+    text_a: str,
+    text_b: str
 ) -> float:
     """
-    Lightweight cosine similarity.
+    Calculate cosine similarity using TF-IDF.
 
-    Avoids sklearn overhead for this simple calculation.
+    Returns:
+        Score from 0 to 100.
     """
 
-    vector_a = np.asarray(
-        vector_a,
-        dtype=np.float32
-    )
+    text_a = _clean_text(text_a)
+    text_b = _clean_text(text_b)
 
-    vector_b = np.asarray(
-        vector_b,
-        dtype=np.float32
-    )
+    if not text_a or not text_b:
+        return 0.0
 
-    norm_a = np.linalg.norm(
-        vector_a
-    )
+    try:
 
-    norm_b = np.linalg.norm(
-        vector_b
-    )
+        vectorizer = TfidfVectorizer(
+            lowercase=True,
+            stop_words="english",
+            ngram_range=(1, 2),
+            max_features=5000,
+            sublinear_tf=True,
+        )
 
-    if norm_a == 0.0 or norm_b == 0.0:
+        matrix = vectorizer.fit_transform(
+            [text_a, text_b]
+        )
+
+        similarity = cosine_similarity(
+            matrix[0:1],
+            matrix[1:2]
+        )[0][0]
+
+        score = float(similarity) * 100.0
+
+        return round(
+            max(
+                0.0,
+                min(score, 100.0)
+            ),
+            2
+        )
+
+    except Exception as error:
+
+        print(
+            "Semantic similarity calculation failed: "
+            f"{error}"
+        )
 
         return 0.0
 
-    similarity = float(
-        np.dot(
-            vector_a,
-            vector_b
-        )
-        /
-        (norm_a * norm_b)
-    )
-
-    return max(
-        -1.0,
-        min(
-            similarity,
-            1.0
-        )
-    )
-
 
 # ============================================================
-# SIMPLE SIMILARITY SCORE
+# PUBLIC SIMILARITY FUNCTION
 # ============================================================
 
 def similarity_score(
@@ -422,107 +153,81 @@ def similarity_score(
     text_b: str
 ) -> float:
     """
-    Calculate semantic similarity between two texts.
+    Public similarity function.
 
     Returns:
-        0 to 100
+        Score from 0 to 100.
     """
 
-    text_a = _clean_text(
-        text_a
-    )
-
-    text_b = _clean_text(
+    return _calculate_text_similarity(
+        text_a,
         text_b
-    )
-
-    if not text_a or not text_b:
-
-        return 0.0
-
-    # --------------------------------------------------------
-    # Check whether model is available.
-    # --------------------------------------------------------
-
-    model = get_model()
-
-    if model is None:
-
-        logger.warning(
-            "Semantic similarity unavailable. "
-            "Returning 0.0."
-        )
-
-        return 0.0
-
-    embedding_a = create_embedding(
-        text_a
-    )
-
-    embedding_b = create_embedding(
-        text_b
-    )
-
-    similarity = _cosine_similarity(
-        embedding_a,
-        embedding_b
-    )
-
-    # --------------------------------------------------------
-    # Convert [-1, 1] to percentage.
-    # --------------------------------------------------------
-
-    score = similarity * 100.0
-
-    # --------------------------------------------------------
-    # Keep score in safe range.
-    # --------------------------------------------------------
-
-    score = max(
-        0.0,
-        min(
-            score,
-            100.0
-        )
-    )
-
-    return round(
-        score,
-        2
     )
 
 
 # ============================================================
-# MAIN SEMANTIC MATCHING FUNCTION
+# EMBEDDING COMPATIBILITY FUNCTION
+# ============================================================
+
+def create_embedding(
+    text: str
+):
+    """
+    Compatibility function.
+
+    The old implementation returned SentenceTransformer
+    embeddings.
+
+    This Render-safe implementation intentionally does
+    not expose heavyweight embeddings.
+
+    It returns None because the application should use
+    calculate_semantic_similarity() instead.
+    """
+
+    return None
+
+
+# ============================================================
+# MULTI-TEXT COMPATIBILITY FUNCTION
+# ============================================================
+
+def _create_embeddings(
+    texts: list[str]
+):
+    """
+    Compatibility function.
+
+    Kept so older imports do not immediately break.
+
+    Heavy embedding generation has intentionally been removed.
+    """
+
+    return None
+
+
+# ============================================================
+# MAIN SEMANTIC MATCHING
 # ============================================================
 
 def calculate_semantic_similarity(
     job_description: str,
     resume_text: str,
-    candidate_skills: Optional[list[str]] = None
+    candidate_skills: list[str] | None = None
 ) -> float:
     """
-    Calculate semantic similarity between a job description
-    and a candidate resume.
+    Calculate lightweight semantic similarity between
+    a job description and a resume.
 
     Formula:
 
-        60% Full JD vs Resume
+        60% JD vs Resume
         +
         40% JD vs Candidate Skills
 
     Returns:
         Semantic score from 0 to 100.
-
-    IMPORTANT:
-    If the Hugging Face model cannot be loaded,
-    this function returns 0 instead of crashing
-    the entire ranking API.
     """
-
-    # ========================================================
-    # CLEAN INPUT
-    # ========================================================
 
     job_description = _clean_text(
         job_description
@@ -533,148 +238,44 @@ def calculate_semantic_similarity(
     )
 
     if not job_description:
-
         return 0.0
 
     if not resume_text:
-
         return 0.0
 
+    # --------------------------------------------------------
+    # Candidate skills
+    # --------------------------------------------------------
 
-    # ========================================================
-    # MODEL CHECK
-    # ========================================================
+    cleaned_skills = _clean_skills(
+        candidate_skills
+    )
 
-    model = get_model()
-
-    if model is None:
-
-        logger.warning(
-            "Semantic model unavailable. "
-            "Continuing ranking without semantic score."
-        )
-
-        return 0.0
-
-
-    # ========================================================
-    # CANDIDATE SKILLS
-    # ========================================================
-
-    if candidate_skills is None:
-
-        candidate_skills = []
-
-    cleaned_skills = []
-
-    for skill in candidate_skills:
-
-        if skill is None:
-
-            continue
-
-        skill = _clean_text(
-            skill
-        )
-
-        if skill:
-
-            cleaned_skills.append(
-                skill
-            )
-
-
-    # ========================================================
-    # SKILLS TEXT
-    # ========================================================
-
-    skills_text = ", ".join(
+    skills_text = " ".join(
         cleaned_skills
     )
 
+    # --------------------------------------------------------
+    # Full JD vs Resume
+    # --------------------------------------------------------
 
-    # ========================================================
-    # PREPARE TEXTS
-    # ========================================================
+    full_resume_score = (
+        _calculate_text_similarity(
+            job_description,
+            resume_text
+        )
+    )
 
-    texts = [
-        job_description,
-        resume_text
-    ]
+    # --------------------------------------------------------
+    # JD vs Candidate Skills
+    # --------------------------------------------------------
 
     if skills_text:
 
-        texts.append(
-            skills_text
-        )
-
-
-    # ========================================================
-    # CREATE EMBEDDINGS
-    # ========================================================
-
-    embeddings = _create_embeddings(
-        texts
-    )
-
-    if embeddings.shape[0] < 2:
-
-        return 0.0
-
-
-    # ========================================================
-    # JOB / RESUME
-    # ========================================================
-
-    job_embedding = embeddings[0]
-
-    resume_embedding = embeddings[1]
-
-
-    # ========================================================
-    # FULL JD VS RESUME
-    # ========================================================
-
-    full_resume_similarity = (
-        _cosine_similarity(
-            job_embedding,
-            resume_embedding
-        )
-    )
-
-    full_resume_score = (
-        max(
-            0.0,
-            min(
-                full_resume_similarity * 100.0,
-                100.0
-            )
-        )
-    )
-
-
-    # ========================================================
-    # JD VS CANDIDATE SKILLS
-    # ========================================================
-
-    if skills_text and embeddings.shape[0] >= 3:
-
-        skills_embedding = embeddings[2]
-
-        skill_similarity = (
-            _cosine_similarity(
-                job_embedding,
-                skills_embedding
-            )
-        )
-
         skill_semantic_score = (
-            max(
-                0.0,
-                min(
-                    skill_similarity * 100.0,
-                    100.0
-                )
+            _calculate_text_similarity(
+                job_description,
+                skills_text
             )
         )
 
@@ -682,10 +283,9 @@ def calculate_semantic_similarity(
 
         skill_semantic_score = 0.0
 
-
-    # ========================================================
-    # FINAL SEMANTIC SCORE
-    # ========================================================
+    # --------------------------------------------------------
+    # Weighted score
+    # --------------------------------------------------------
 
     semantic_score = (
         full_resume_score * 0.60
@@ -693,42 +293,31 @@ def calculate_semantic_similarity(
         skill_semantic_score * 0.40
     )
 
-
-    # ========================================================
-    # FINAL SAFETY
-    # ========================================================
-
-    semantic_score = max(
-        0.0,
-        min(
-            semantic_score,
-            100.0
-        )
-    )
-
-
     return round(
-        semantic_score,
+        max(
+            0.0,
+            min(
+                semantic_score,
+                100.0
+            )
+        ),
         2
     )
 
 
 # ============================================================
-# MODEL PRELOAD
+# MODEL COMPATIBILITY
 # ============================================================
 
 def preload_model() -> None:
     """
-    Explicitly load the semantic model.
+    Compatibility function.
 
-    DO NOT call this during FastAPI startup on
-    a low-memory Render instance.
-
-    This function is provided for optional use
-    on larger deployment instances.
+    There is no model to preload in the lightweight
+    implementation.
     """
 
-    get_model()
+    return None
 
 
 # ============================================================
@@ -737,31 +326,14 @@ def preload_model() -> None:
 
 def get_model_status() -> dict:
     """
-    Return the current semantic model status.
-
-    Useful for debugging Render deployments.
+    Return semantic engine status.
     """
 
-    if _model_failed:
-
-        return {
-            "available": False,
-            "model": MODEL_NAME,
-            "error": _model_error,
-        }
-
-    model = get_model()
-
-    if model is None:
-
-        return {
-            "available": False,
-            "model": MODEL_NAME,
-            "error": _model_error,
-        }
-
     return {
-        "available": True,
-        "model": MODEL_NAME,
-        "error": None,
+        "loaded": True,
+        "model": "TF-IDF",
+        "backend": "scikit-learn",
+        "remote_model_download": False,
+        "huggingface_required": False,
+        "memory_safe": True,
     }
