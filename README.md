@@ -1,238 +1,61 @@
-\# KRAM AI — GenAI Candidate Ranking System
+# KRAM AI – GenAI Candidate Ranking System
 
+KRAM AI is a candidate screening and ranking web application that helps recruiters compare resumes against a given job description.
 
+The idea behind this project was to make the initial resume screening process faster by automatically extracting information from resumes, matching skills with the job requirements, and ranking candidates based on how well they fit the role.
 
-> An AI-powered candidate screening and ranking platform that analyzes job descriptions and resumes to identify the best-fit candidates.
+## Live Demo
 
+🌐 **Website:** https://kram-omega.vercel.app/
 
+---
 
-\## 🚀 Live Demo
+## What does KRAM AI do?
 
+A recruiter can enter a job description and upload multiple candidate resumes.
 
+The system then:
 
-\*\*Website:\*\* https://kram-omega.vercel.app/
+- Extracts candidate information from resumes
+- Identifies skills and experience
+- Extracts required and preferred skills from the job description
+- Compares candidates with the job requirements
+- Calculates a score for each candidate
+- Ranks candidates from best to lowest match
+- Shows matched and missing skills
+- Calculates semantic similarity between the resume and job description
+- Provides an explanation of the factors affecting the score
+- Shows analytics for the uploaded candidates
 
+The goal is not to completely replace human recruiters, but to make the first stage of candidate screening easier and faster.
 
+---
 
-\---
+## How the ranking works
 
+Each candidate gets an overall score based on four main factors:
 
+- **Required Skills – 40%**
+- **Preferred Skills – 15%**
+- **Experience – 20%**
+- **Semantic Similarity – 25%**
 
-\## 📌 Overview
+For example, if a candidate has most of the required skills but doesn't have enough experience, the system reflects both things in the final score.
 
+The semantic matching part also helps when a resume uses different wording from the job description but is still relevant to the role.
 
+---
 
-KRAM AI is a GenAI-powered candidate ranking system designed to make resume screening faster and more data-driven.
+## Explainable AI
 
+One of the parts I wanted to include in this project was an explanation of **why** a candidate received a particular score.
 
+KRAM AI uses SHAP-based explanations to show the factors that affected the candidate's ranking.
 
-The platform allows recruiters to:
-
-
-
-\- Enter a job description
-
-\- Upload multiple candidate resumes
-
-\- Extract candidate information and skills
-
-\- Compare candidates against job requirements
-
-\- Calculate candidate match scores
-
-\- Rank candidates automatically
-
-\- View matched and missing skills
-
-\- Analyze semantic similarity between resumes and job descriptions
-
-\- View explainable scoring factors using SHAP
-
-\- Explore candidate analytics
-
-\- Generate candidate reports
-
-
-
-The system combines traditional skill matching with semantic analysis and explainable AI to provide a more comprehensive candidate ranking.
-
-
-
-\---
-
-
-
-\## ✨ Key Features
-
-
-
-\### 📄 Resume Processing
-
-
-
-\- Upload multiple resumes
-
-\- PDF resume parsing
-
-\- Candidate name and contact extraction
-
-\- Skill extraction
-
-\- Experience extraction
-
-\- Resume text processing
-
-
-
-\### 🎯 Intelligent Candidate Matching
-
-
-
-Candidates are evaluated using multiple factors:
-
-
-
-\- Required skill matching
-
-\- Preferred skill matching
-
-\- Experience matching
-
-\- Semantic similarity
-
-\- Overall candidate score
-
-
-
-\### 🧠 Semantic Matching
-
-
-
-The system uses semantic analysis to compare the meaning of:
-
-
-
-\*\*Job Description ↔ Candidate Resume\*\*
-
-
-
-This allows candidates to receive relevant matches even when their resume wording does not exactly match the job description.
-
-
-
-\### 🔍 Explainable AI
-
-
-
-KRAM AI provides SHAP-based explanations showing which factors influenced a candidate's ranking.
-
-
-
-Examples include:
-
-
-
-\- Required Skills
-
-\- Preferred Skills
-
-\- Experience
-
-\- Semantic Similarity
-
-
-
-This helps recruiters understand \*\*why\*\* a candidate received a particular score.
-
-
-
-\### 📊 Analytics Dashboard
-
-
-
-The platform provides analytics such as:
-
-
-
-\- Candidate score distribution
-
-\- Average candidate score
-
-\- Top candidates
-
-\- Skill coverage
-
-\- Match statistics
-
-\- Candidate ranking insights
-
-
-
-\### 📑 Candidate Reports
-
-
-
-Candidate information and ranking results can be viewed through dedicated candidate and report pages.
-
-
-
-\---
-
-
-
-\## 🏗️ System Architecture
-
-
+For example:
 
 ```text
-
-&#x20;                   ┌──────────────────────┐
-
-&#x20;                   │      KRAM AI         │
-
-&#x20;                   │      Frontend        │
-
-&#x20;                   │     Next.js          │
-
-&#x20;                   └──────────┬───────────┘
-
-&#x20;                              │
-
-&#x20;                              │ REST API
-
-&#x20;                              ▼
-
-&#x20;                   ┌──────────────────────┐
-
-&#x20;                   │       FastAPI        │
-
-&#x20;                   │       Backend        │
-
-&#x20;                   └──────────┬───────────┘
-
-&#x20;                              │
-
-&#x20;            ┌─────────────────┼─────────────────┐
-
-&#x20;            │                 │                 │
-
-&#x20;            ▼                 ▼                 ▼
-
-&#x20;      Resume Parser      Skill Matching    Semantic Matching
-
-&#x20;            │                 │                 │
-
-&#x20;            └─────────────────┼─────────────────┘
-
-&#x20;                              │
-
-&#x20;                              ▼
-
-&#x20;                   ┌──────────────────────┐
-
-&#x20;                   │ Candidate Ranking    │
-
-&#x20;                   │ \& SHAP Explanation   │
-
-&#x20;                   └──────────────────────┘
-
+Required Skills       +14.28
+Experience             +10.00
+Semantic Similarity    -1.47
+Preferred Skills       -7.50
